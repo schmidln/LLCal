@@ -517,20 +517,27 @@
         }
 
         function validateAvailabilityData(data) {
-            const requiredDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
-            
-            if (!data.week || !data.availability) {
-                throw new Error('Missing required fields: week and availability');
-            }
-
-            // Validate that availability has all days
-            requiredDays.forEach(day => {
-                if (!data.availability[day]) {
-                    data.availability[day] = [];
+            // Check if data is an array (your format) or object (old format)
+            if (Array.isArray(data)) {
+                // Your format - array of time slot objects
+                if (data.length === 0) {
+                    throw new Error('Empty availability data');
                 }
-            });
-
-            return data;
+                
+                // Check if objects have required fields
+                const firstItem = data[0];
+                if (!firstItem.date || !firstItem.time || !firstItem.isoStart || !firstItem.isoEnd) {
+                    throw new Error('Missing required fields: date, time, isoStart, isoEnd');
+                }
+                
+                return data;
+            } else {
+                // Old format - object with week and availability
+                if (!data.week || !data.availability) {
+                    throw new Error('Missing required fields: week and availability');
+                }
+                return data;
+            }
         }
 
         function createMeeting() {
@@ -552,15 +559,32 @@
             reader.onload = function(e) {
                 try {
                     const data = JSON.parse(e.target.result);
-                    validateAvailabilityData(data);
+                    const processedData = validateAvailabilityData(data);
                     
-                    const meeting = {
-                        id: Date.now().toString(),
-                        name: meetingName,
-                        week: data.week,
-                        availability: data.availability,
-                        createdAt: new Date().toISOString()
-                    };
+                    let meeting;
+                    if (Array.isArray(processedData)) {
+                        // Convert your format to internal format
+                        const availability = convertToInternalFormat(processedData);
+                        const weekRange = extractWeekRange(processedData);
+                        
+                        meeting = {
+                            id: Date.now().toString(),
+                            name: meetingName,
+                            week: weekRange,
+                            availability: availability,
+                            rawData: processedData, // Keep original data for Google Calendar
+                            createdAt: new Date().toISOString()
+                        };
+                    } else {
+                        // Old format
+                        meeting = {
+                            id: Date.now().toString(),
+                            name: meetingName,
+                            week: processedData.week,
+                            availability: processedData.availability,
+                            createdAt: new Date().toISOString()
+                        };
+                    }
 
                     meetings.push(meeting);
                     saveMeetings();
@@ -640,7 +664,48 @@
             }
         }
 
-        // Client functionality
+        // Data conversion functions
+        function convertToInternalFormat(rawData) {
+            const availability = {
+                'Monday': [], 'Tuesday': [], 'Wednesday': [], 'Thursday': [], 
+                'Friday': [], 'Saturday': [], 'Sunday': []
+            };
+            
+            rawData.forEach(slot => {
+                const dayName = getDayName(slot.date);
+                if (dayName && availability[dayName]) {
+                    availability[dayName].push(slot.time);
+                }
+            });
+            
+            return availability;
+        }
+        
+        function getDayName(dateString) {
+            const dayMapping = {
+                'Mon': 'Monday', 'Tue': 'Tuesday', 'Wed': 'Wednesday', 
+                'Thu': 'Thursday', 'Fri': 'Friday', 'Sat': 'Saturday', 'Sun': 'Sunday'
+            };
+            
+            const dayAbbr = dateString.split(' ')[0];
+            return dayMapping[dayAbbr];
+        }
+        
+        function extractWeekRange(rawData) {
+            if (rawData.length === 0) return 'Unknown Week';
+            
+            const dates = rawData.map(slot => new Date(slot.isoStart));
+            const minDate = new Date(Math.min(...dates));
+            const maxDate = new Date(Math.max(...dates));
+            
+            const formatDate = (date) => {
+                const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                return `${months[date.getMonth()]} ${date.getDate()}`;
+            };
+            
+            return `${formatDate(minDate)} - ${formatDate(maxDate)}, ${minDate.getFullYear()}`;
+        }
         function populateWeekSelector() {
             const selector = document.getElementById('week-selector');
             selector.innerHTML = '<option value="">Choose a meeting...</option>';
@@ -702,7 +767,24 @@
 
             // Add selection to clicked element
             element.classList.add('selected');
-            selectedTimeSlot = { day, time };
+            
+            // Find the corresponding raw data entry for accurate calendar booking
+            const meeting = meetings.find(m => m.id === currentMeetingId);
+            let matchingSlot = null;
+            
+            if (meeting && meeting.rawData) {
+                // Find matching slot in raw data
+                const dayName = getDayName(meeting.rawData.find(slot => getDayName(slot.date) === day)?.date || '');
+                matchingSlot = meeting.rawData.find(slot => 
+                    getDayName(slot.date) === day && slot.time === time
+                );
+            }
+            
+            selectedTimeSlot = { 
+                day, 
+                time, 
+                rawSlot: matchingSlot 
+            };
             
             // Enable book button
             document.getElementById('book-selected').disabled = false;
@@ -711,28 +793,46 @@
         function bookSelectedSlot() {
             if (!selectedTimeSlot) return;
 
-            const { day, time } = selectedTimeSlot;
+            const { day, time, rawSlot } = selectedTimeSlot;
             
-            // Create Google Calendar URL
-            const startDateTime = new Date();
-            // You would need to parse the time and day to create proper datetime
-            const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour later
+            let calendarUrl;
             
-            const calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting&dates=${formatDateForCalendar(startDateTime)}/${formatDateForCalendar(endDateTime)}&details=Meeting%20scheduled%20through%20booking%20system&add=schmidln@bc.edu,alsleben@bc.edu`;
+            if (rawSlot) {
+                // Use the precise ISO times from your data
+                const startTime = rawSlot.isoStart;
+                const endTime = rawSlot.isoEnd;
+                
+                // Convert ISO strings to Google Calendar format (YYYYMMDDTHHMMSSZ)
+                const formatForCalendar = (isoString) => {
+                    return isoString.replace(/[-:]/g, '').replace(/\.\d{3}/, '');
+                };
+                
+                const formattedStart = formatForCalendar(startTime);
+                const formattedEnd = formatForCalendar(endTime);
+                
+                calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting&dates=${formattedStart}/${formattedEnd}&details=Meeting%20scheduled%20through%20booking%20system&add=schmidln@bc.edu,alsleben@bc.edu`;
+            } else {
+                // Fallback for old format - create approximate datetime
+                const today = new Date();
+                const startDateTime = new Date(today.getTime() + 24 * 60 * 60 * 1000); // Tomorrow
+                const endDateTime = new Date(startDateTime.getTime() + 30 * 60 * 1000); // 30 minutes later
+                
+                const formatForCalendar = (date) => {
+                    return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+                };
+                
+                calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=Meeting&dates=${formatForCalendar(startDateTime)}/${formatForCalendar(endDateTime)}&details=Meeting%20scheduled%20through%20booking%20system&add=schmidln@bc.edu,alsleben@bc.edu`;
+            }
             
-            showNotification('Redirecting to Google Calendar...', 'success');
+            showNotification(`Booking ${time} on ${day} - Redirecting to Google Calendar...`, 'success');
             
             // Open Google Calendar in new tab
             setTimeout(() => {
                 window.open(calendarUrl, '_blank');
-            }, 1000);
+            }, 1500);
         }
 
-        function formatDateForCalendar(date) {
-            return date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
-        }
-
-        // Storage functions
+        // Client functionality
         function saveMeetings() {
             const meetingsData = JSON.stringify(meetings);
             // In a real app, you would save to a database
