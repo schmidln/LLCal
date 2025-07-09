@@ -445,6 +445,11 @@
             </div>
 
             <button class="upload-btn" onclick="createMeeting()">Create Meeting</button>
+            
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid var(--navy-accent);">
+                <button class="btn btn-secondary" onclick="testJSONParsing()" style="background: var(--navy-accent); margin-right: 10px;">Test JSON File</button>
+                <small style="color: var(--gray-medium);">Click to test if your JSON file is valid before creating a meeting</small>
+            </div>
 
             <div class="meetings-list">
                 <h3>Created Meetings</h3>
@@ -508,15 +513,18 @@
                 try {
                     const data = JSON.parse(e.target.result);
                     validateAvailabilityData(data);
-                    showNotification('File uploaded successfully!', 'success');
+                    showNotification('File uploaded successfully! Ready to create meeting.', 'success');
                 } catch (error) {
-                    showNotification('Invalid JSON file format', 'warning');
+                    console.error('JSON parsing error:', error);
+                    showNotification('Invalid JSON file format: ' + error.message, 'warning');
                 }
             };
             reader.readAsText(file);
         }
 
         function validateAvailabilityData(data) {
+            console.log('Validating data:', typeof data, Array.isArray(data));
+            
             // Check if data is an array (your format) or object (old format)
             if (Array.isArray(data)) {
                 // Your format - array of time slot objects
@@ -530,13 +538,17 @@
                     throw new Error('Missing required fields: date, time, isoStart, isoEnd');
                 }
                 
+                console.log('✅ Array format validated successfully');
                 return data;
-            } else {
+            } else if (data && typeof data === 'object') {
                 // Old format - object with week and availability
                 if (!data.week || !data.availability) {
                     throw new Error('Missing required fields: week and availability');
                 }
+                console.log('✅ Object format validated successfully');
                 return data;
+            } else {
+                throw new Error('Invalid data format - expected array or object');
             }
         }
 
@@ -662,6 +674,42 @@
                 populateWeekSelector();
                 showNotification('Meeting deleted successfully!', 'success');
             }
+        }
+
+        // Test function for debugging
+        function testJSONParsing() {
+            const fileInput = document.getElementById('admin-file');
+            
+            if (!fileInput.files[0]) {
+                showNotification('Please select a JSON file first', 'warning');
+                return;
+            }
+
+            const file = fileInput.files[0];
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    console.log('File content (first 200 chars):', e.target.result.substring(0, 200));
+                    const data = JSON.parse(e.target.result);
+                    console.log('Parsed data type:', typeof data, 'Is array:', Array.isArray(data));
+                    console.log('Data length:', data.length);
+                    console.log('First item:', data[0]);
+                    
+                    const validatedData = validateAvailabilityData(data);
+                    const converted = convertToInternalFormat(validatedData);
+                    const weekRange = extractWeekRange(validatedData);
+                    
+                    console.log('Week range:', weekRange);
+                    console.log('Converted availability:', converted);
+                    
+                    showNotification(`✅ JSON is valid! Found ${data.length} time slots for week: ${weekRange}`, 'success');
+                    
+                } catch (error) {
+                    console.error('Detailed error:', error);
+                    showNotification('❌ JSON Error: ' + error.message, 'warning');
+                }
+            };
+            reader.readAsText(file);
         }
 
         // Data conversion functions
